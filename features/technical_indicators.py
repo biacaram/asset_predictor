@@ -42,8 +42,19 @@ def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     avg_gain = gain.rolling(window=window).mean()
     avg_loss = loss.rolling(window=window).mean()
 
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
-    return 100 - (100 / (1 + rs))
+    # Caso especial: quando avg_loss é zero (nenhuma perda na janela --
+    # comum em séries só-de-alta, como um índice de renda fixa que nunca
+    # cai), RSI deve ser 100 se houve ganho, ou 50 se não houve variação
+    # nenhuma. Sem esse tratamento, a divisão por zero geraria NaN em toda
+    # a série, mesmo fora das primeiras `window` linhas.
+    avg_loss_safe = avg_loss.replace(0, float("nan"))
+    rs = avg_gain / avg_loss_safe
+    result = 100 - (100 / (1 + rs))
+
+    no_loss_mask = avg_loss == 0
+    result = result.where(~no_loss_mask, other=(avg_gain > 0).map({True: 100.0, False: 50.0}))
+
+    return result
 
 
 def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:

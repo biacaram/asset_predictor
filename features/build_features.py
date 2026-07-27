@@ -65,6 +65,48 @@ def add_target(df: pd.DataFrame, horizon: int = HORIZON) -> pd.DataFrame:
     return df
 
 
+def get_reduced_feature_set(all_columns: list) -> list:
+    """
+    Remove features redundantes do conjunto completo -- pensado para testar
+    a hipótese de que multicolinearidade está causando overfitting na
+    regressão linear.
+
+    SMA e EMA carregam basicamente a mesma informação (tendência de preço
+    suavizada); mantemos só EMA. Os lags de close puro (`close_lag_N`)
+    também são redundantes com `return_lag_N`, que já captura a variação
+    -- mantemos só os retornos, que é a versão mais informativa pro modelo.
+    """
+    exclude = {"date", "symbol", "target_return"}
+    drop_prefixes = ("sma_",)
+    drop_exact_prefix = "close_lag_"
+
+    reduced = [
+        c for c in all_columns
+        if c not in exclude
+        and not c.startswith(drop_prefixes)
+        and not c.startswith(drop_exact_prefix)
+    ]
+    return reduced
+
+
+def get_model_feature_columns(df: pd.DataFrame, reduced: bool = True) -> list:
+    """
+    Ponto único de verdade pra decidir quais colunas viram feature de
+    modelo. Além da redução de redundância (get_reduced_feature_set),
+    remove qualquer coluna que seja NaN em 100% das linhas -- necessário
+    pra renda fixa, onde `volume` não existe e ficaria NaN o tempo todo,
+    o que quebraria modelos do sklearn (não aceitam NaN nativamente).
+
+    Sempre use esta função (em vez de montar a lista de colunas na mão)
+    ao chamar run_backtest -- assim a lógica de "quais colunas são
+    features válidas" fica num só lugar.
+    """
+    cols = get_reduced_feature_set(df.columns.tolist()) if reduced else [
+        c for c in df.columns if c not in {"date", "symbol", "target_return"}
+    ]
+    return [c for c in cols if df[c].notna().any()]
+
+
 def build_features(raw_path: str, symbol: str) -> pd.DataFrame:
     df = pd.read_parquet(raw_path)
     df = df.sort_values("date").reset_index(drop=True)
@@ -76,8 +118,12 @@ def build_features(raw_path: str, symbol: str) -> pd.DataFrame:
     # Linhas com NaN no começo (por causa das janelas de indicadores) e no
     # fim (por causa do target futuro) não servem pra treino -- mas vale
     # manter separado de "descartar" para você decidir o que fazer com elas.
+    # `volume` é excluído do critério de descarte porque séries de renda
+    # fixa (CDI, Selic) não têm volume por definição -- seria NaN em todas
+    # as linhas, e um dropna() ingênuo apagaria o DataFrame inteiro.
     n_before = len(df)
-    df_clean = df.dropna().reset_index(drop=True)
+    dropna_cols = [c for c in df.columns if c != "volume"]
+    df_clean = df.dropna(subset=dropna_cols).reset_index(drop=True)
     n_after = len(df_clean)
     print(f"[{symbol}] {n_before} linhas brutas -> {n_after} linhas utilizáveis "
           f"({n_before - n_after} descartadas por NaN de janela/horizonte)")
